@@ -1,0 +1,52 @@
+@startuml
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Container.puml
+
+title C2 Diagram (Task 2): NovaMarket Order History (CQRS Pattern)
+
+Person(customer, "Покупатель", "Просматривает историю заказов (список, детали, чеки)")
+
+System_Boundary(novamarket, "NovaMarket System") {
+    Container(api_gateway, "API Gateway / Proxy", "NGINX", "Входная точка, балансировка нагрузки. Роутинг команд и запросов.")
+    
+    ' Command Side (Write)
+    Boundary(command_side, "Command Model (Write)") {
+        Container(cart_service, "Cart Service", "Микросервис", "Корзина, состав заказа")
+        Container(oms_service, "OMS (Order Management System)", "Микросервис", "Стейт-машина заказа (Saga Initiator)")
+        Container(payment_service, "Payment Service", "Микросервис", "Платежи и формирование чека")
+        Container(logistics_service, "Logistics Service", "Микросервис", "Доставка (статусы, трек-номера)")
+        
+        ContainerDb(order_db, "OMS DB", "PostgreSQL", "Хранение реляционных данных и текущего стейта заказов (ACID)")
+    }
+    
+    ' Event Bus
+    ContainerQueue(kafka, "Message Broker", "Apache Kafka", "Транспорт событий изменения стейта агрегатов")
+    
+    ' Query Side (Read)
+    Boundary(query_side, "Query Model (Read)") {
+        Container(order_history, "OrderHistory Service", "Микросервис", "Read Model Projection: слушает события, собирает их в единый JSON-документ заказа и отдает Frontend-у.")
+        ContainerDb(history_db, "History DB (Read Model)", "MongoDB", "Денормализованные JSON-документы заказов (готовые данные для быстрой отдачи)")
+    }
+}
+
+' Interactions
+Rel(customer, api_gateway, "REST GET /api/history (Query)\nREST POST /api/orders (Command)", "HTTPS")
+
+' Routing (CQRS Split at Gateway)
+Rel(api_gateway, oms_service, "Commands (Создать, Отменить, Оплатить)", "REST")
+Rel(api_gateway, order_history, "Queries (Получить список заказов, Детали, Скачать чек)", "REST")
+
+' Command Flow
+Rel(oms_service, order_db, "Запись стейта (Write)")
+Rel(oms_service, kafka, "Publishes Domain Events (OrderCreated, StatusChanged)")
+Rel(payment_service, kafka, "Publishes Domain Events (PaymentSucceeded + Receipt ID)")
+Rel(logistics_service, kafka, "Publishes Domain Events (DeliveryScheduled, Delivered)")
+Rel(oms_service, cart_service, "Запрашивает состав корзины для переноса в заказ", "gRPC / REST")
+
+' Query Flow (Syncing & Serving)
+Rel(kafka, order_history, "Consumes ALL Events (Data Sync)")
+Rel(order_history, history_db, "Update Projector (Сохранение JSON агрегата на чтение)")
+Rel(order_history, history_db, "Fetch pre-calculated JSON views (Быстрое чтение < 0.3c)")
+
+Lay_R(command_side, kafka)
+Lay_R(kafka, query_side)
+@enduml
