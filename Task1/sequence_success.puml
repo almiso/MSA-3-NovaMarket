@@ -1,0 +1,70 @@
+@startuml
+autonumber
+title Успешный сценарий оформления заказа (Saga Choreography)
+
+actor "Покупатель" as Customer
+box "Микросервисы NovaMarket" #LightCyan
+    participant "API Gateway" as API
+    participant "Cart Service" as Cart
+    participant "Inventory Service" as Inventory
+    participant "OMS" as OMS
+    queue "Apache Kafka\n(Message Broker)" as Kafka
+    participant "Payment Service" as Payment
+    participant "Logistics Service" as Logistics
+    participant "Notification Service" as Notifications
+    participant "OrderHistory Service" as History
+end box
+
+== Шаг 0: Работа с корзиной (Pre-checkout) ==
+Customer -> API: POST /cart/items (Добавить товар)
+API -> Cart: Add item
+Cart -> Inventory: GET /inventory/check (Синхронно или через Read-Model)\nПроверка наличия до чекаута
+Inventory --> Cart: Наличие подтверждено
+Cart --> API: Ок
+API --> Customer: Товар в корзине
+
+== Шаг 1: Инициализация заказа (Checkout) ==
+Customer -> API: POST /orders (Оформить заказ из корзины)
+API -> OMS: Validate & Create
+OMS -> Cart: Очистить корзину для этого заказа
+OMS -> OMS: Сохраняет статус: PENDING
+OMS -> Kafka: Публикует событие: **OrderCreated (domain)**
+OMS --> API: 202 Accepted (Order ID)
+API --> Customer: 202 Перенаправление на оплату
+
+== Шаг 2: Удержание (Резерв) товаров ==
+Kafka <- Inventory: Читает: **OrderCreated**
+Inventory -> Inventory: Резервирует товары в БД
+Inventory -> Kafka: Публикует событие: **InventoryReserved (domain)**
+
+Kafka <- OMS: Читает: **InventoryReserved**
+OMS -> OMS: Обновляет статус: AWAITING_PAYMENT
+
+== Шаг 3: Оплата ==
+Customer -> API: POST /payments/{id} (Оплатить заказ)
+API -> Payment: Инициация оплаты
+Payment -> Payment: Взаимодействие со шлюзом
+Payment -> Kafka: Публикует событие: **PaymentSucceeded (domain)**
+Payment --> API: 200 OK (Успех)
+API --> Customer: Страница успешной оплаты
+
+== Шаг 4: Обработка оплаты и доставка ==
+par Параллельная обработка события
+    Kafka <- OMS: Читает: **PaymentSucceeded**
+    OMS -> OMS: Обновляет статус: PAID
+
+    Kafka <- Logistics: Читает: **PaymentSucceeded**
+    Logistics -> Logistics: Формирует заявку у партнера
+    Logistics -> Kafka: Публикует событие: **DeliveryScheduled (domain)**
+
+    Kafka <- Notifications: Читает: **PaymentSucceeded**
+    Notifications -> Customer: Отправляет чек / Push
+end
+
+== Шаг 5: Финализация и История ==
+Kafka <- OMS: Читает: **DeliveryScheduled**
+OMS -> OMS: Обновляет статус: IN_DELIVERY
+
+Kafka <- History: Читает: **DeliveryScheduled**
+History -> History: Сохраняет слепок заказа в историю
+@enduml

@@ -1,0 +1,48 @@
+@startuml
+autonumber
+title Ошибочный сценарий оформления заказа с компенсацией (Saga Choreography)
+
+actor "Покупатель" as Customer
+box "Микросервисы NovaMarket" #LightPink
+    participant "Cart Service" as Cart
+    participant "Inventory Service" as Inventory
+    participant "OMS" as OMS
+    queue "Apache Kafka\n(Message Broker)" as Kafka
+    participant "Payment Service" as Payment
+    participant "OrderHistory Service" as History
+end box
+
+== Шаг 0: Корзина и проверка наличия ==
+Customer -> Cart: Добавить товар
+Cart -> Inventory: Проверка наличия
+Inventory --> Cart: Наличие подтверждено
+Cart --> Customer: Ок
+
+== Шаг 1: Инициализация и Резерв (Успешно) ==
+Customer -> OMS: Оформить заказ (Checkout)
+OMS -> Kafka: **OrderCreated (domain)**
+Kafka <- Inventory: Читает **OrderCreated**
+Inventory -> Kafka: **InventoryReserved (domain)**
+Kafka <- OMS: Читает **InventoryReserved** (Статус: AWAITING_PAYMENT)
+
+== Шаг 2: Ошибка оплаты ==
+Customer -> Payment: Оплатить заказ (ввод карты)
+note right of Payment: Ошибка шлюза или недостаточно средств
+Payment -> Kafka: Публикует событие: **PaymentFailed (failure)**
+Payment --> Customer: 400 Ошибка оплаты
+
+== Шаг 3: Старт компенсационных действий (Rollback) ==
+Kafka <- OMS: Читает: **PaymentFailed**
+OMS -> OMS: Обновляет статус: CANCELLED
+OMS -> Kafka: Публикует событие: **OrderCancelled (compensation)**
+
+== Шаг 4: Компенсация на складе ==
+Kafka <- Inventory: Читает: **OrderCancelled**
+note right of Inventory: Возвращаем зарезервированные \nтовары обратно в пул доступных
+Inventory -> Inventory: Снимает резервы в БД
+Inventory -> Kafka: Публикует событие: **InventoryReleased (compensation)**
+
+== Шаг 5: Архивация неуспешного заказа ==
+Kafka <- History: Читает: **OrderCancelled**
+History -> History: Сохраняет статус "Отменен" в историю
+@enduml

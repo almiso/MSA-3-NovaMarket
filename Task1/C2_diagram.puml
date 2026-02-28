@@ -1,0 +1,74 @@
+@startuml
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Container.puml
+
+title C2 (Container) Diagram: NovaMarket E-Commerce Platform (Event-Driven: Choreography/Pub-Sub)
+
+Person(customer, "Покупатель", "Просматривает каталог, работает с корзиной, оформляет заказы, платит")
+Person(seller, "Продавец", "Размещает товары, получает уведомления")
+
+System_Boundary(novamarket, "NovaMarket System") {
+    Container(api_gateway, "API Gateway / Proxy", "NGINX", "Входная точка, балансировка нагрузки и роутинг")
+    
+    Container(catalog_service, "Catalog Service", "Микросервис", "Каталог товаров (поиск, фильтрация, карточки)")
+    
+    Container(cart_service, "Cart Service", "Микросервис", "Управление корзиной пользователя (Redis/DB)")
+    
+    Container(oms_service, "OMS (Order Management System)", "Микросервис", "Стейт-машина заказа, координация (Saga Initiator)")
+    
+    Container(order_history, "OrderHistory Service", "Микросервис", "Хранение завершенных заказов на чтение")
+    ContainerDb(order_db, "Order DB", "БД", "Хранение текущих и архивных заказов")
+    
+    Container(inventory_service, "Inventory Service", "Микросервис", "Складские остатки, резервирование")
+    ContainerDb(inventory_db, "Inventory DB", "БД", "Наличие товаров")
+    
+    Container(payment_service, "Payment Service", "Микросервис", "Интеграция с платежными шлюзами")
+    
+    Container(logistics_service, "Logistics Service", "Микросервис", "Взаимодействие со службами доставки")
+    
+    Container(notification_service, "Notification Service", "Микросервис", "Отправка email/push уведомлений")
+    
+    ContainerQueue(kafka, "Message Broker", "Apache Kafka", "Шина данных, транспорт (топики событий)")
+}
+
+System_Ext(payment_gateway, "Внешний Payment Gateway", "Шлюз для списания средств")
+System_Ext(delivery_provider, "Внешняя логистическая компания", "Доставка заказов клиентам")
+
+' Взаимодействие с пользователями
+Rel(customer, api_gateway, "REST API: Просмотр каталога, Корзина, Оформление", "HTTPS")
+Rel(seller, api_gateway, "REST API: Размещение товаров, Статусы", "HTTPS")
+
+' API Gateway -> Services (Синхронно)
+Rel(api_gateway, catalog_service, "Каталог, поиск", "REST")
+Rel(api_gateway, cart_service, "Управление корзиной", "REST")
+Rel(api_gateway, oms_service, "Создание заказа (Checkout)", "REST")
+Rel(api_gateway, order_history, "Просмотр истории заказов", "REST")
+Rel(api_gateway, payment_service, "Оплата", "REST")
+
+' Внутренние синхронные вызовы (опционально, для быстрого пре-чека)
+Rel(cart_service, inventory_service, "Синхронная проверка наличия (до чекаута)", "gRPC/REST")
+
+' Микросервисы -> БД
+Rel(oms_service, order_db, "Запись/Чтение (Текущие заказы)")
+Rel(order_history, order_db, "Чтение/Запись (Архив)")
+Rel(inventory_service, inventory_db, "CRUD Резервы")
+
+' Интеграции
+Rel(payment_service, payment_gateway, "Списания/Возвраты", "API")
+Rel(logistics_service, delivery_provider, "Заявки", "API")
+
+' Событийные потоки (Хореография через Kafka)
+Rel(oms_service, kafka, "Publishes: OrderCreated", "Async")
+Rel(inventory_service, kafka, "Publishes: InventoryReserved, InventoryReservationFailed, InventoryReleased", "Async")
+Rel(payment_service, kafka, "Publishes: PaymentSucceeded, PaymentFailed", "Async")
+Rel(logistics_service, kafka, "Publishes: DeliveryScheduled", "Async")
+
+Rel(kafka, inventory_service, "Consumes: OrderCreated, OrderCancelled", "Async")
+Rel(kafka, oms_service, "Consumes: InventoryReserved, InventoryReservationFailed, PaymentSucceeded, PaymentFailed, DeliveryScheduled", "Async")
+Rel(kafka, logistics_service, "Consumes: PaymentSucceeded", "Async")
+Rel(kafka, notification_service, "Consumes: OrderCreated, PaymentSucceeded, DeliveryScheduled", "Async")
+Rel(kafka, order_history, "Consumes: DeliveryScheduled, OrderCancelled (Финализация)", "Async")
+
+Lay_R(oms_service, inventory_service)
+Lay_R(payment_service, logistics_service)
+
+@enduml
