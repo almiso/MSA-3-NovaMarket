@@ -1,0 +1,14 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: scaletestapp-monitor
+  labels:
+    release: prometheus # Это важно, чтобы kube-prometheus-stack его подхватил
+spec:
+  selector:
+    matchLabels:
+      app: scaletestapp
+  endpoints:
+  - port: metrics-port # Нужно назвать порт в сервисе
+    path: /metrics
+    interval: 5s

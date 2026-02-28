@@ -1,0 +1,21 @@
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: scaletestapp-rps-hpa
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: scaletestapp
+  minReplicas: 1
+  maxReplicas: 10
+  metrics:
+  - type: Pods
+    pods:
+      # Метрика, которую должен поставлять prometheus-adapter (например, http_requests_per_second или http_requests_total)
+      metric:
+        name: http_requests
+      target:
+        type: AverageValue
+        # Масштабируемся, если среднее количество запросов на 1 под превышает указанное значение (например, 50 RPS)
+        averageValue: 50
